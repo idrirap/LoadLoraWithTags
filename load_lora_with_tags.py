@@ -42,6 +42,46 @@ def calculate_sha256(file_path):
     return sha256_hash.hexdigest()
 
 
+# search for __metadata__ json embedded in the lora file
+def get_metadata(filepath, type):
+    filepath = folder_paths.get_full_path(type, filepath)
+    with open(filepath, "rb") as file:
+        # https://github.com/huggingface/safetensors#format
+        # 8 bytes: N, an unsigned little-endian 64-bit integer, containing the size of the header
+        header_size = int.from_bytes(file.read(8), "little", signed=False)
+
+        if header_size <= 0:
+            raise BufferError("Invalid header size")
+
+        header = file.read(header_size)
+        if header_size <= 0:
+            raise BufferError("Invalid header")
+        header_json = json.loads(header)
+        return header_json["__metadata__"] if "__metadata__" in header_json else None
+
+
+# parse the __metadata__ json looking for trained tags 
+def sort_tags_by_frequency(meta_tags):
+    if meta_tags is None:
+        return []
+    if "ss_tag_frequency" in meta_tags:
+        meta_tags = meta_tags["ss_tag_frequency"]
+        meta_tags = json.loads(meta_tags)
+        sorted_tags = {}
+        for _, dataset in meta_tags.items():
+            for tag, count in dataset.items():
+                tag = str(tag).strip()
+                if tag in sorted_tags:
+                    sorted_tags[tag] = sorted_tags[tag] + count
+                else:
+                    sorted_tags[tag] = count
+        # sort tags by training frequency. Most seen tags firsts
+        sorted_tags = dict(sorted(sorted_tags.items(), key=lambda item: item[1], reverse=True))
+        return list(sorted_tags.keys())
+    else:
+        return []
+
+
 def load_and_save_tags(lora_name, print_tags, query_tags, force_fetch):
     json_tags_path = "./loras_tags.json"
     lora_tags = load_json_from_file(json_tags_path)
@@ -104,8 +144,8 @@ class LoraLoaderTagsQuery:
                             }
                 }
     
-    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "LIST",)
-    RETURN_NAMES = ("MODEL", "CLIP", "civitai_tags", "civitai_tags_list")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "LIST", "LIST")
+    RETURN_NAMES = ("MODEL", "CLIP", "civitai_tags", "civitai_tags_list", "meta_tags_list")
     FUNCTION = "load_lora"
     CATEGORY = "llwt"
 
@@ -117,7 +157,8 @@ class LoraLoaderTagsQuery:
                 out_string = ""
             return (model, clip, out_string,)
         
-        
+        meta_tags_list = sort_tags_by_frequency(get_metadata(lora_name, "loras"))
+        meta_tags_list.append(opt_prompt)
         lora_path, output_tags, output_tags_list = load_and_save_tags(lora_name, print_tags, query_tags, force_fetch)
 
         lora = None
@@ -141,7 +182,7 @@ class LoraLoaderTagsQuery:
             else:
                 output_tags = opt_prompt
                 output_tags_list = [opt_prompt]
-        return (model_lora, clip_lora, output_tags, output_tags_list,)
+        return (model_lora, clip_lora, output_tags, output_tags_list, meta_tags_list)
     
 
 class LoraTagsQueryOnly:
@@ -164,13 +205,16 @@ class LoraTagsQueryOnly:
             }
         }
     
-    RETURN_TYPES = ("STRING", "LIST",)
-    RETURN_NAMES = ("civitai_tags", "civitai_tags_list")
+    RETURN_TYPES = ("STRING", "LIST", "LIST")
+    RETURN_NAMES = ("civitai_tags", "civitai_tags_list", "meta_tags_list")
     FUNCTION = "load_lora"
     CATEGORY = "llwt"
 
     def load_lora(self, lora_name, query_tags, tags_out, print_tags, force_fetch, opt_prompt=None):
         _, output_tags, output_tags_list = load_and_save_tags(lora_name, print_tags, query_tags, force_fetch)
+
+        meta_tags_list = sort_tags_by_frequency(get_metadata(lora_name, "loras"))
+        meta_tags_list.append(opt_prompt)
 
         if opt_prompt is not None:
             if tags_out:
@@ -179,7 +223,7 @@ class LoraTagsQueryOnly:
             else:
                 output_tags = opt_prompt
                 output_tags_list = [opt_prompt]
-        return (output_tags, output_tags_list,)
+        return (output_tags, output_tags_list, meta_tags_list)
     
     
 class TagsSelector:
